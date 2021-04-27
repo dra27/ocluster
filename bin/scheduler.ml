@@ -5,7 +5,8 @@ module Restorer = Capnp_rpc_net.Restorer
 let ( / ) = Filename.concat
 
 let () =
-  Prometheus_unix.Logging.init ()
+  let formatter = Winsvc_wrapper.formatter in
+  Prometheus_unix.Logging.init ~formatter ()
 
 let or_die = function
   | Ok x -> x
@@ -121,6 +122,13 @@ let main capnp secrets_dir pools prometheus_config state_dir default_clients =
 
 (* Command-line parsing *)
 
+let main ~install ((capnp, secrets_dir, pools, prometheus_config, state_dir, default_clients), arguments) =
+  let (name, display, text) = ("ocluster-scheduler", "OCluster Scheduler", "Manage build workers") in
+  if install then
+    `Ok (Winsvc_wrapper.install name display text arguments)
+  else
+    `Ok (Winsvc_wrapper.run name (fun () -> main capnp secrets_dir pools prometheus_config state_dir default_clients))
+
 open Cmdliner
 
 let pools =
@@ -171,9 +179,32 @@ let default_clients =
     ~docv:"NAME"
     ["default-clients"]
 
-let cmd =
-  let doc = "Manage build workers" in
-  Term.(const main $ Capnp_rpc_unix.Vat_config.cmd $ secrets_dir $ pools $ listen_prometheus $ state_dir $ default_clients),
-  Term.info "ocluster-scheduler" ~doc ~version:Version.t
+let scheduler_opts_t =
+  let scheduler_opts capnp secrets_dir pools prometheus_config state_dir default_clients  =
+    (capnp, secrets_dir, pools, prometheus_config, state_dir, default_clients) in
+  Term.(with_used_args
+    (const scheduler_opts $ Capnp_rpc_unix.Vat_config.cmd $ secrets_dir $ pools
+     $ listen_prometheus $ state_dir $ default_clients))
 
-let () = Term.(exit @@ eval cmd)
+let cmd ~install =
+  let doc = "Manage build workers" in
+  let man = [
+    `P "On $(b,Windows), specify '$(b,install)' as the first \
+        command-line paramater to install the scheduler as a Windows \
+        service with the specified parameters, and '$(b,remove)' to \
+        remove the scheduler from the services." ] in
+  Term.(ret (const (main ~install) $ scheduler_opts_t)),
+  Term.info "ocluster-scheduler" ~doc ~man ~version:Version.t
+
+let () =
+  match Array.to_list Sys.argv with
+  | hd :: "install" :: argv ->
+    Term.(exit @@ eval ~argv:(Array.of_list (hd :: argv)) (cmd ~install:true))
+  | _ :: "remove" :: args ->
+    if args <> [] then begin
+      prerr_endline "'remove' should be used only once, in first position.";
+      exit 1
+    end else
+      Winsvc_wrapper.remove "ocluster-scheduler"
+  | _ ->
+    Term.(exit @@ eval (cmd ~install:false))
