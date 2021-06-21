@@ -1,0 +1,21 @@
+FROM antonindecimo/opam-windows:windows-mingw-ocaml-4.12@sha256:99a7a2fcc6f22bf19f7e107f4f499d6f3422a11d25191f5e7c6db2651ab69e27 AS build
+ADD https://capnproto.org/capnproto-c++-win32-0.8.0.zip capnproto-c++-win32-0.8.0.zip
+RUN C:\cygwin64\bin\bash.exe --login -c "unzip capnproto-c++-win32-0.8.0.zip && mv capnproto-tools-win32-0.8.0/* /usr/bin"
+#RUN ocaml-env exec -- opam depext -yi conf-gmp conf-graphviz conf-sqlite3 conf-libffi
+RUN git clone --branch windows --recursive https://github.com/MisterDA/ocluster.git
+
+RUN cd ~/opam-repository && git pull origin -q master && git reset --hard 5247d732ce1392a737ff162ee69f674b10a0e6a4 && opam update
+COPY --chown=opam ocluster-api.opam ocluster.opam /src/
+COPY --chown=opam obuilder/obuilder.opam obuilder/obuilder-spec.opam /src/obuilder/
+RUN opam pin -yn /src/obuilder/
+WORKDIR /src
+RUN opam install -y --deps-only .
+ADD --chown=opam . .
+RUN opam config exec -- dune build ./_build/install/default/bin/ocluster-worker
+
+FROM debian:10
+RUN apt-get update && apt-get install docker.io libev4 curl gnupg2 git libsqlite3-dev ca-certificates netbase -y --no-install-recommends
+WORKDIR /var/lib/ocluster-worker
+ENTRYPOINT ["/usr/local/bin/ocluster-worker"]
+ENV PROGRESS_NO_TRUNC=1
+COPY --from=build /src/_build/instal/default/bin/ocluster-worker /usr/local/bin/
