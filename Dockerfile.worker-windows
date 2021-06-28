@@ -1,0 +1,42 @@
+# escape=`
+ARG WINDOWS_RELEASE=20H2
+
+FROM antonindecimo/opam-windows:windows-mingw-ocaml-4.12@sha256:382d9cb78015ff904420b9ead320794747ccb6c3ac00ee2a37c3232b01c78ad0 AS docker
+#ADD https://download.docker.com/win/static/stable/x86_64/docker-20.10.7.zip docker.zip
+COPY docker-20.10.7.zip docker.zip
+RUN powershell -c "Expand-Archive docker.zip -DestinationPath C:\\"
+
+FROM antonindecimo/opam-windows:windows-mingw-ocaml-4.12@sha256:382d9cb78015ff904420b9ead320794747ccb6c3ac00ee2a37c3232b01c78ad0 AS build
+#ADD https://capnproto.org/capnproto-c++-win32-0.8.0.zip capnproto-c++-win32-0.8.0.zip
+COPY capnproto-c++-win32-0.8.0.zip capnproto-c++-win32-0.8.0.zip
+RUN C:\cygwin64\bin\bash.exe --login -c "unzip capnproto-c++-win32-0.8.0.zip && mv capnproto-tools-win32-0.8.0/* /usr/bin"
+# This can be replaced with opam option jobs=2
+RUN sed -i -e "s/: 1/: 2/" C:/opam/.opam/config
+RUN cd opam-repository && git pull origin -q opam2 && git reset --hard 2d753ac6ad83a7820b2c07449e2e6be5c99ab341 && opam update
+RUN ocaml-env exec -- opam depext -yi conf-gmp conf-sqlite3
+COPY ocluster-api.opam ocluster.opam C:\src\
+COPY obuilder/obuilder.opam C:\deps\obuilder\
+COPY obuilder/obuilder-spec.opam C:\deps\obuilder-spec\
+RUN opam pin -yn C:\deps\obuilder
+RUN opam pin -yn C:\deps\obuilder-spec
+WORKDIR C:\src
+#RUN opam install obuilder-spec --deps-only && C:\cygwin64\bin\bash -c '/usr/lib/cygsympathy/cygsympathy'
+#RUN opam install obuilder --deps-only
+#RUN opam update && ls -la C:/opam/.opam/4.12/.opam-switch/sources/obuilder-spec && false
+RUN opam install --deps-only . || ls -la /cygdrive/c/opam/.opam/4.12/.opam-switch/sources/obuilder-spec || ls -la /cygdrive/c/deps/obuilder-spec
+ADD . .
+RUN opam exec -- dune build ./_build/install/default/bin/ocluster-worker.exe
+RUN mkdir -p windows && `
+    copy _build\install\default\bin\ocluster-worker.exe windows\ && `
+    copy C:\cygwin64\usr\x86_64-w64-mingw32\sys-root\mingw\bin\libsqlite3-0.dll windows\ && `
+    copy C:\cygwin64\usr\x86_64-w64-mingw32\sys-root\mingw\bin\libgmp-10.dll windows\
+
+FROM mcr.microsoft.com/windows/nanoserver:$WINDOWS_RELEASE
+WORKDIR C:\ProgramData\Worker
+USER ContainerAdministrator
+RUN for /f "tokens=1,2,*" %a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /V Path ^| findstr /r "^[^H]"') do `
+      reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /V Path /t REG_EXPAND_SZ /f /d "%c;C:\Program Files\Docker;C:\Worker"
+COPY --from=build C:\src\windows\ C:\Worker\
+COPY --from=docker ["/docker/docker.exe", "/Program Files/Docker/"]
+ENTRYPOINT ["C:\\Worker\\ocluster-worker.exe"]
+CMD [ "--help" ]
